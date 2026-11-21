@@ -51,7 +51,7 @@ float  revealAtr  = input.float(3.0, "within ATR x", minval = 0.1, maxval = 50.0
 int    atrLen     = input.int(14, "ATR length", minval = 1, maxval = 200, group = G3)
 bool   mergeSame  = input.bool(true, "Merge same-level labels", group = G3)
 int    extBars    = input.int(5, "Label offset (bars)", minval = 0, maxval = 100, tooltip = "How far past the last bar unswept lines and labels reach.", group = G3)
-bool   showTf     = input.bool(true, "Show timeframe in label", group = G3)
+string labelMode  = input.string("Off", "Labels", options = ["Off", "Timeframe only", "Timeframe + BSL/SSL"], tooltip = "Off = no text at all (just lines and boxes).", group = G3)
 
 color  bslCol   = input.color(color.rgb(224, 82, 82), "BSL / SSL colors", inline = "col", group = G4)
 color  sslCol   = input.color(color.rgb(33, 150, 243), "", inline = "col", group = G4)
@@ -65,12 +65,13 @@ bool   showBoxBrd = input.bool(true, "Border", inline = "bx1", group = G5)
 bool   boxSwept   = input.bool(true, "Keep mitigated boxes", tooltip = "Mitigated = the level has been swept. Off removes the box completely; on keeps it with the transparency below.", group = G5)
 int    boxSweptTr = input.int(100, "Mitigated box transparency %", minval = 0, maxval = 100, tooltip = "Box fill and border once the level is mitigated. 100 = fully transparent (invisible).", group = G5)
 int    lineSweptTr = input.int(60, "Mitigated line / label transparency %", minval = 0, maxval = 100, tooltip = "Line and label once the level is mitigated. 100 = invisible.", group = G5)
-color  bslBoxCol  = input.color(#673ab7, "BSL / SSL box colors", inline = "bx2", group = G5)
+color  bslBoxCol  = input.color(#ffeb3b, "BSL / SSL box colors", inline = "bx2", group = G5)
 color  sslBoxCol  = input.color(color.rgb(33, 150, 243), "", inline = "bx2", group = G5)
-int    boxFillOp  = input.int(4, "Box fill opacity % (BSL & SSL)", minval = 0, maxval = 100, inline = "bx3", tooltip = "Opacity (not transparency) of the box background and border while the level is unswept. 4 = very light fill, 31 = soft border.", group = G5)
-int    boxBrdOp   = input.int(31, "BSL border opacity %", minval = 0, maxval = 100, inline = "bx3", group = G5)
-int    sslBrdOp   = input.int(16, "SSL border opacity %", minval = 0, maxval = 100, group = G5)
-bool   showLine   = input.bool(true, "Show liquidity lines", group = G5)
+int    boxFillOp  = input.int(9, "BSL fill opacity %", minval = 0, maxval = 100, inline = "bx3", tooltip = "Opacity (not transparency) of the box background while the level is unswept.", group = G5)
+int    sslFillOp  = input.int(4, "SSL fill opacity %", minval = 0, maxval = 100, inline = "bx3", group = G5)
+int    boxBrdOp   = input.int(0, "BSL border opacity %", minval = 0, maxval = 100, inline = "bx3", group = G5)
+int    sslBrdOp   = input.int(0, "SSL border opacity %", minval = 0, maxval = 100, group = G5)
+bool   showLine   = input.bool(false, "Show liquidity lines", group = G5)
 
 // =============================================================================
 // TYPES & STATE
@@ -344,31 +345,32 @@ render() =>
                             // wick box: extreme -> body edge, live to the right until swept
                             if showBox and (not swept or boxSwept) and not na(q.edge) and q.edge != q.level
                                 color bc = q.hi ? bslBoxCol : sslBoxCol
-                                color bgc = color.new(bc, swept ? boxSweptTr : 100 - boxFillOp)
+                                color bgc = color.new(bc, swept ? boxSweptTr : 100 - (q.hi ? boxFillOp : sslFillOp))
                                 color brd = showBoxBrd ? color.new(bc, swept ? boxSweptTr : 100 - (q.hi ? boxBrdOp : sslBrdOp)) : color.new(bc, 100)
                                 drawnBoxes.push(box.new(q.t, math.max(q.level, q.edge), endT, math.min(q.level, q.edge), xloc = xloc.bar_time, bgcolor = bgc, border_color = brd, border_width = 1))
 
-                            int swKey = swept ? q.sweptT : 0
-                            int side = q.hi ? 1 : 0
-                            string sfx = q.hi ? "BSL" : "SSL"
-                            int m = -1
-                            if mergeSame and mLvl.size() > 0
-                                for k = 0 to mLvl.size() - 1
-                                    if mSide.get(k) == side and mSw.get(k) == swKey and math.abs(mLvl.get(k) - q.level) <= syminfo.mintick * 2
-                                        m := k
-                            if m >= 0
-                                if showTf
-                                    mTfs.set(m, mTfs.get(m) + " · " + tfTxt)
-                                    label.set_text(mLbl.get(m), mTfs.get(m) + " " + sfx)
-                            else
-                                string txt = showTf ? tfTxt + " " + sfx : sfx
-                                label lb = label.new(endT, q.level, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = tc, size = sz)
-                                drawnLabels.push(lb)
-                                mLvl.push(q.level)
-                                mSide.push(side)
-                                mSw.push(swKey)
-                                mTfs.push(tfTxt)
-                                mLbl.push(lb)
+                            if labelMode != "Off"
+                                int swKey = swept ? q.sweptT : 0
+                                int side = q.hi ? 1 : 0
+                                string sfx = q.hi ? "BSL" : "SSL"
+                                int m = -1
+                                if mergeSame and mLvl.size() > 0
+                                    for k = 0 to mLvl.size() - 1
+                                        if mSide.get(k) == side and mSw.get(k) == swKey and math.abs(mLvl.get(k) - q.level) <= syminfo.mintick * 2
+                                            m := k
+                                if m >= 0
+                                    if true
+                                        mTfs.set(m, mTfs.get(m) + " · " + tfTxt)
+                                        label.set_text(mLbl.get(m), mTfs.get(m) + (labelMode == "Timeframe only" ? "" : " " + sfx))
+                                else
+                                    string txt = labelMode == "Timeframe only" ? tfTxt : tfTxt + " " + sfx
+                                    label lb = label.new(endT, q.level, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = tc, size = sz)
+                                    drawnLabels.push(lb)
+                                    mLvl.push(q.level)
+                                    mSide.push(side)
+                                    mSw.push(swKey)
+                                    mTfs.push(tfTxt)
+                                    mLbl.push(lb)
     0
 
 if barstate.islast
