@@ -1,0 +1,381 @@
+//@version=6
+// HTF Liquidity - Every Timeframe
+// Standalone rebuild of the liquidity module from "Bandz Po3 Profiler".
+// Marks swing highs (BSL) and swing lows (SSL) on exactly these timeframes:
+// 1m, 3m, 5m, 15m, 30m, 1H, 4H, 1D, 1W, 1M (each can be switched off or changed).
+// Default: only the timeframe you have open is plotted. Switch "Plot" to show all enabled ones.
+// Each liquidity level also gets a WICK BOX: from the swing extreme to the body edge of that
+// HTF candle (only the wick), extended live to the right until the level is swept.
+// A line stops where the level is swept. Same-level liquidity from several timeframes
+// is merged into one label (e.g. "1D · 4H · 1H BSL").
+indicator("HTF Liquidity - Every Timeframe", shorttitle="HTF Liq", overlay=true,
+     max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// =============================================================================
+// SETTINGS
+// =============================================================================
+const string G1 = "Timeframes"
+const string G2 = "Swing & sweep rules"
+const string G3 = "Display"
+const string G4 = "Alerts / style"
+
+string plotMode = input.string("Chart timeframe only", "Plot", options = ["Chart timeframe only", "All enabled timeframes"], tooltip = "Chart timeframe only: liquidity is plotted only for the timeframe you have open (1m chart = 1m liquidity, 5m chart = 5m liquidity, ...). The chart timeframe must be one of the 10 rows below. All enabled timeframes: every enabled row at or above the chart timeframe is plotted.", group = G1)
+bool   t1On  = input.bool(true,  "", inline = "t1",  group = G1)
+string t1Tf  = input.timeframe("1",   "TF 1",  inline = "t1",  group = G1)
+bool   t2On  = input.bool(true,  "", inline = "t2",  group = G1)
+string t2Tf  = input.timeframe("3",   "TF 2",  inline = "t2",  group = G1)
+bool   t3On  = input.bool(true,  "", inline = "t3",  group = G1)
+string t3Tf  = input.timeframe("5",   "TF 3",  inline = "t3",  group = G1)
+bool   t4On  = input.bool(true,  "", inline = "t4",  group = G1)
+string t4Tf  = input.timeframe("15",  "TF 4",  inline = "t4",  group = G1)
+bool   t5On  = input.bool(true,  "", inline = "t5",  group = G1)
+string t5Tf  = input.timeframe("30",  "TF 5",  inline = "t5",  group = G1)
+bool   t6On  = input.bool(true,  "", inline = "t6",  group = G1)
+string t6Tf  = input.timeframe("60",  "TF 6",  inline = "t6",  group = G1)
+bool   t7On  = input.bool(true,  "", inline = "t7",  group = G1)
+string t7Tf  = input.timeframe("240", "TF 7",  inline = "t7",  group = G1)
+bool   t8On  = input.bool(true,  "", inline = "t8",  group = G1)
+string t8Tf  = input.timeframe("1D",  "TF 8",  inline = "t8",  group = G1)
+bool   t9On  = input.bool(true,  "", inline = "t9",  group = G1)
+string t9Tf  = input.timeframe("1W",  "TF 9",  inline = "t9",  group = G1)
+bool   t10On = input.bool(true,  "", inline = "t10", group = G1)
+string t10Tf = input.timeframe("1M",  "TF 10", inline = "t10", group = G1, tooltip = "Only timeframes equal to or higher than the chart timeframe are used.")
+
+int    swingStrength = input.int(1, "Swing strength", minval = 1, maxval = 5, tooltip = "Candles on each side of the swing. 1 = classic 3-candle swing, 2 = 5-candle swing, etc.", group = G2)
+string sweepBy       = input.string("Wick", "Swept by", options = ["Wick", "Close"], tooltip = "Wick: any trade through the level. Close: a chart bar must close through it.", group = G2)
+
+int    keepActive = input.int(3, "Always show: newest unswept per TF / side", minval = 1, maxval = 100, tooltip = "The newest unswept levels that are always visible.", group = G3)
+int    keepSwept  = input.int(2, "Swept kept per TF / side", minval = 0, maxval = 100, tooltip = "How many swept (mitigated) levels to keep, newest first. 0 hides swept liquidity. Swept boxes are invisible by default (Mitigated box transparency = 100); lines / labels fade.", group = G3)
+bool   dynReveal  = input.bool(true, "Dynamic reveal", inline = "dyn", tooltip = "Older unswept levels stay hidden until price comes close to them, then they appear (box, line and label). They hide again when price moves away. 'Close' = within the ATR distance set here.", group = G3)
+float  revealAtr  = input.float(3.0, "within ATR x", minval = 0.1, maxval = 50.0, step = 0.5, inline = "dyn", group = G3)
+int    atrLen     = input.int(14, "ATR length", minval = 1, maxval = 200, group = G3)
+bool   mergeSame  = input.bool(true, "Merge same-level labels", group = G3)
+int    extBars    = input.int(5, "Label offset (bars)", minval = 0, maxval = 100, tooltip = "How far past the last bar unswept lines and labels reach.", group = G3)
+bool   showTf     = input.bool(true, "Show timeframe in label", group = G3)
+
+color  bslCol   = input.color(color.rgb(224, 82, 82), "BSL / SSL colors", inline = "col", group = G4)
+color  sslCol   = input.color(color.rgb(33, 150, 243), "", inline = "col", group = G4)
+string lineSty  = input.string("Solid", "Line style", options = ["Solid", "Dashed", "Dotted"], group = G4)
+bool   widthByTf = input.bool(true, "Thicker lines for higher TF", group = G4)
+string txtSize  = input.string("Tiny", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = G4)
+
+const string G5 = "Wick boxes"
+bool   showBox    = input.bool(true, "Wick box", inline = "bx1", tooltip = "Rectangle from the swing extreme to the body edge of the HTF candle that made it (the wick only). It extends live to the right until the level is swept.", group = G5)
+bool   showBoxBrd = input.bool(true, "Border", inline = "bx1", group = G5)
+bool   boxSwept   = input.bool(true, "Keep mitigated boxes", tooltip = "Mitigated = the level has been swept. Off removes the box completely; on keeps it with the transparency below.", group = G5)
+int    boxSweptTr = input.int(100, "Mitigated box transparency %", minval = 0, maxval = 100, tooltip = "Box fill and border once the level is mitigated. 100 = fully transparent (invisible).", group = G5)
+int    lineSweptTr = input.int(60, "Mitigated line / label transparency %", minval = 0, maxval = 100, tooltip = "Line and label once the level is mitigated. 100 = invisible.", group = G5)
+color  bslBoxCol  = input.color(#673ab7, "BSL / SSL box colors", inline = "bx2", group = G5)
+color  sslBoxCol  = input.color(color.rgb(33, 150, 243), "", inline = "bx2", group = G5)
+int    boxFillOp  = input.int(4, "Box fill opacity % (BSL & SSL)", minval = 0, maxval = 100, inline = "bx3", tooltip = "Opacity (not transparency) of the box background and border while the level is unswept. 4 = very light fill, 31 = soft border.", group = G5)
+int    boxBrdOp   = input.int(31, "BSL border opacity %", minval = 0, maxval = 100, inline = "bx3", group = G5)
+int    sslBrdOp   = input.int(16, "SSL border opacity %", minval = 0, maxval = 100, group = G5)
+bool   showLine   = input.bool(true, "Show liquidity lines", group = G5)
+
+// =============================================================================
+// TYPES & STATE
+// =============================================================================
+type Lane
+    string tf
+    bool   active
+    int    no
+    int    sec
+    int    openT
+    float  ch
+    float  cl
+    int    cht
+    int    clt
+    float  co
+    float  cc
+    array<float> os
+    array<float> cls
+    array<float> hs
+    array<float> ls
+    array<int>   hts
+    array<int>   lts
+
+type Liq
+    int   lane
+    bool  hi
+    float level
+    int   t
+    int   sweptT
+    float edge
+
+var array<Lane> lanes = array.new<Lane>()
+var array<Liq>  liqs  = array.new<Liq>()
+var array<Liq>  openLiqs = array.new<Liq>()   // unswept levels only (keeps the per-bar sweep check cheap)
+var array<line>  drawnLines  = array.new<line>()
+var array<label> drawnLabels = array.new<label>()
+var array<box>   drawnBoxes  = array.new<box>()
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+tfValid(string tf) =>
+    float a = timeframe.in_seconds(tf)
+    float b = timeframe.in_seconds()
+    not na(a) and not na(b) and a >= b
+
+fmtTf(string tf) =>
+    float s = timeframe.in_seconds(tf)
+    string r = tf
+    if not na(s)
+        if s < 3600 or (s < 86400 and s % 3600 != 0)
+            r := str.tostring(int(s / 60)) + "m"
+        else if s < 86400
+            r := str.tostring(int(s / 3600)) + "H"
+        else if s < 604800
+            r := str.tostring(int(s / 86400)) + "D"
+        else if s < 2592000
+            r := str.tostring(int(s / 604800)) + "W"
+        else
+            r := str.tostring(int(s / 2592000)) + "M"
+    r
+
+txtSz(string choice) =>
+    switch choice
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+        => size.tiny
+
+addLiq(int laneNo, bool isHi, float lvl, int t, float edge) =>
+    bool dup = false
+    int n = liqs.size()
+    if n > 0
+        for i = math.max(0, n - 12) to n - 1
+            Liq q = liqs.get(i)
+            if q.lane == laneNo and q.hi == isHi and q.t == t
+                dup := true
+    if not dup
+        Liq nq = Liq.new(laneNo, isHi, lvl, t, na, edge)
+        liqs.push(nq)
+        openLiqs.push(nq)
+        while liqs.size() > 1500
+            Liq old = liqs.shift()
+            if na(old.sweptT)
+                old.sweptT := 1   // retire it from openLiqs
+    0
+
+// Centre candle of the stored window is the swing candidate.
+scanPivots(Lane ln, int s) =>
+    int win = 2 * s + 1
+    float hc = ln.hs.get(s)
+    float lc = ln.ls.get(s)
+    bool isHi = true
+    bool isLo = true
+    for i = 0 to win - 1
+        if i != s
+            if ln.hs.get(i) >= hc
+                isHi := false
+            if ln.ls.get(i) <= lc
+                isLo := false
+    // wick = swing extreme to the body edge of that HTF candle
+    float oc = ln.os.get(s)
+    float cc = ln.cls.get(s)
+    if isHi
+        addLiq(ln.no, true, hc, ln.hts.get(s), math.max(oc, cc))
+    if isLo
+        addLiq(ln.no, false, lc, ln.lts.get(s), math.min(oc, cc))
+    0
+
+// Builds the HTF candle from chart bars. A realtime bar runs once per tick, so a candle is only
+// opened once per chart bar (openT == time guard).
+ingest(Lane ln, bool isNew, int s) =>
+    if ln.active
+        bool opened = not na(ln.openT) and ln.openT == time
+        if isNew and not opened
+            if not na(ln.openT)
+                int win = 2 * s + 1
+                ln.hs.push(ln.ch)
+                ln.ls.push(ln.cl)
+                ln.hts.push(ln.cht)
+                ln.lts.push(ln.clt)
+                ln.os.push(ln.co)
+                ln.cls.push(ln.cc)
+                while ln.hs.size() > win
+                    ln.os.shift()
+                    ln.cls.shift()
+                    ln.hs.shift()
+                    ln.ls.shift()
+                    ln.hts.shift()
+                    ln.lts.shift()
+                if ln.hs.size() == win
+                    scanPivots(ln, s)
+            ln.openT := time
+            ln.ch := high
+            ln.cl := low
+            ln.cht := time
+            ln.clt := time
+            ln.co := open
+            ln.cc := close
+        else if not na(ln.openT)
+            ln.cc := close
+            if high > ln.ch
+                ln.ch := high
+                ln.cht := time
+            if low < ln.cl
+                ln.cl := low
+                ln.clt := time
+    0
+
+// =============================================================================
+// LANES (chart timeframe + 10 higher timeframes)
+// =============================================================================
+if lanes.size() == 0
+    array<string> tfs = array.from(t1Tf, t2Tf, t3Tf, t4Tf, t5Tf, t6Tf, t7Tf, t8Tf, t9Tf, t10Tf)
+    array<bool>   ons = array.from(t1On, t2On, t3On, t4On, t5On, t6On, t7On, t8On, t9On, t10On)
+    for i = 0 to 9
+        string tf = tfs.get(i)
+        Lane ln = Lane.new()
+        ln.tf := tf
+        ln.active := ons.get(i) and tfValid(tf) and (plotMode == "All enabled timeframes" or timeframe.in_seconds(tf) == timeframe.in_seconds())
+        ln.no := i
+        ln.sec := int(timeframe.in_seconds(tf))
+        ln.os := array.new_float()
+        ln.cls := array.new_float()
+        ln.hs := array.new_float()
+        ln.ls := array.new_float()
+        ln.hts := array.new_int()
+        ln.lts := array.new_int()
+        lanes.push(ln)
+
+bool ok1  = t1On  and tfValid(t1Tf)
+bool ok2  = t2On  and tfValid(t2Tf)
+bool ok3  = t3On  and tfValid(t3Tf)
+bool ok4  = t4On  and tfValid(t4Tf)
+bool ok5  = t5On  and tfValid(t5Tf)
+bool ok6  = t6On  and tfValid(t6Tf)
+bool ok7  = t7On  and tfValid(t7Tf)
+bool ok8  = t8On  and tfValid(t8Tf)
+bool ok9  = t9On  and tfValid(t9Tf)
+bool ok10 = t10On and tfValid(t10Tf)
+
+array<bool> newFlags = array.from(
+     ok1  and timeframe.change(t1Tf),
+     ok2  and timeframe.change(t2Tf),
+     ok3  and timeframe.change(t3Tf),
+     ok4  and timeframe.change(t4Tf),
+     ok5  and timeframe.change(t5Tf),
+     ok6  and timeframe.change(t6Tf),
+     ok7  and timeframe.change(t7Tf),
+     ok8  and timeframe.change(t8Tf),
+     ok9  and timeframe.change(t9Tf),
+     ok10 and timeframe.change(t10Tf))
+
+for i = 0 to 9
+    ingest(lanes.get(i), newFlags.get(i), swingStrength)
+
+// =============================================================================
+// SWEEP DETECTION
+// =============================================================================
+float sweepHi = sweepBy == "Close" ? close : high
+float sweepLo = sweepBy == "Close" ? close : low
+bool bslSweptNow = false
+bool sslSweptNow = false
+int oi = openLiqs.size() - 1
+while oi >= 0
+    Liq q = openLiqs.get(oi)
+    if not na(q.sweptT)
+        openLiqs.remove(oi)
+    else if time > q.t and (q.hi ? sweepHi > q.level : sweepLo < q.level)
+        q.sweptT := time
+        openLiqs.remove(oi)
+        if q.hi
+            bslSweptNow := true
+        else
+            sslSweptNow := true
+    oi -= 1
+
+// =============================================================================
+// RENDER (redrawn on the last bar)
+// =============================================================================
+float atrV = ta.atr(atrLen)
+
+render() =>
+    while drawnLines.size() > 0
+        line.delete(drawnLines.pop())
+    while drawnLabels.size() > 0
+        label.delete(drawnLabels.pop())
+    while drawnBoxes.size() > 0
+        box.delete(drawnBoxes.pop())
+
+    int chartMs = int(timeframe.in_seconds() * 1000)
+    int nL = lanes.size()
+    array<int> actCnt = array.new_int(nL * 2, 0)
+    array<int> swCnt  = array.new_int(nL * 2, 0)
+    array<float>  mLvl = array.new_float()
+    array<int>    mSide = array.new_int()
+    array<int>    mSw = array.new_int()
+    array<string> mTfs = array.new_string()
+    array<label>  mLbl = array.new<label>()
+    string sty = lineSty == "Dashed" ? line.style_dashed : lineSty == "Dotted" ? line.style_dotted : line.style_solid
+    string sz = txtSz(txtSize)
+
+    if liqs.size() > 0
+        // highest timeframe first, so merged labels lead with the biggest timeframe
+        for li = nL - 1 to 0
+            Lane ln = lanes.get(li)
+            if ln.active
+                string tfTxt = fmtTf(ln.tf)
+                for qi = liqs.size() - 1 to 0
+                    Liq q = liqs.get(qi)
+                    if q.lane == li
+                        int slot = li * 2 + (q.hi ? 0 : 1)
+                        bool swept = not na(q.sweptT)
+                        bool near = not swept and dynReveal and not na(atrV) and math.abs(q.level - close) <= atrV * revealAtr
+                        bool allowed = (swept ? (swCnt.get(slot) < keepSwept) : (actCnt.get(slot) < keepActive or near)) and drawnLines.size() < 490 and drawnBoxes.size() < 490 and drawnLabels.size() < 490
+                        if allowed
+                            if swept
+                                swCnt.set(slot, swCnt.get(slot) + 1)
+                            else
+                                actCnt.set(slot, actCnt.get(slot) + 1)
+                            int endT = swept ? q.sweptT : time + chartMs * extBars
+                            color base = q.hi ? bslCol : sslCol
+                            color c = swept ? color.new(base, lineSweptTr) : base
+                            // label text uses the box colors
+                            color txtBase = q.hi ? bslBoxCol : sslBoxCol
+                            color tc = swept ? color.new(txtBase, lineSweptTr) : txtBase
+                            int w = not widthByTf ? 1 : ln.sec >= 86400 ? 3 : ln.sec >= 14400 ? 2 : 1
+                            if showLine
+                                drawnLines.push(line.new(q.t, q.level, endT, q.level, xloc = xloc.bar_time, color = c, style = sty, width = w))
+                            // wick box: extreme -> body edge, live to the right until swept
+                            if showBox and (not swept or boxSwept) and not na(q.edge) and q.edge != q.level
+                                color bc = q.hi ? bslBoxCol : sslBoxCol
+                                color bgc = color.new(bc, swept ? boxSweptTr : 100 - boxFillOp)
+                                color brd = showBoxBrd ? color.new(bc, swept ? boxSweptTr : 100 - (q.hi ? boxBrdOp : sslBrdOp)) : color.new(bc, 100)
+                                drawnBoxes.push(box.new(q.t, math.max(q.level, q.edge), endT, math.min(q.level, q.edge), xloc = xloc.bar_time, bgcolor = bgc, border_color = brd, border_width = 1))
+
+                            int swKey = swept ? q.sweptT : 0
+                            int side = q.hi ? 1 : 0
+                            string sfx = q.hi ? "BSL" : "SSL"
+                            int m = -1
+                            if mergeSame and mLvl.size() > 0
+                                for k = 0 to mLvl.size() - 1
+                                    if mSide.get(k) == side and mSw.get(k) == swKey and math.abs(mLvl.get(k) - q.level) <= syminfo.mintick * 2
+                                        m := k
+                            if m >= 0
+                                if showTf
+                                    mTfs.set(m, mTfs.get(m) + " · " + tfTxt)
+                                    label.set_text(mLbl.get(m), mTfs.get(m) + " " + sfx)
+                            else
+                                string txt = showTf ? tfTxt + " " + sfx : sfx
+                                label lb = label.new(endT, q.level, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = tc, size = sz)
+                                drawnLabels.push(lb)
+                                mLvl.push(q.level)
+                                mSide.push(side)
+                                mSw.push(swKey)
+                                mTfs.push(tfTxt)
+                                mLbl.push(lb)
+    0
+
+if barstate.islast
+    render()
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+alertcondition(bslSweptNow, "BSL swept", "Buy-side liquidity (high) swept on {{ticker}}")
+alertcondition(sslSweptNow, "SSL swept", "Sell-side liquidity (low) swept on {{ticker}}")
