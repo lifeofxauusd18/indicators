@@ -4,12 +4,13 @@
 // Marks swing highs (BSL) and swing lows (SSL) on exactly these timeframes:
 // 1m, 3m, 5m, 15m, 30m, 1H, 4H, 1D, 1W, 1M (each can be switched off or changed).
 // Default: only the timeframe you have open is plotted. Switch "Plot" to show all enabled ones.
-// Each liquidity level also gets a WICK BOX: from the swing extreme to the body edge of that
-// HTF candle (only the wick), extended live to the right until the level is swept.
+// Each liquidity level gets a TAP ZONE: the wick-only area between the swing extreme and the
+// highest (BSL) / lowest (SSL) candle BODY seen since the swing. Bodies that close higher shrink
+// the zone, wicks that poke into it are counted as taps. It extends live until the level is swept.
 // A line stops where the level is swept. Same-level liquidity from several timeframes
 // is merged into one label (e.g. "1D · 4H · 1H BSL").
 indicator("HTF Liquidity - Every Timeframe", shorttitle="HTF Liq", overlay=true,
-     max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+     max_lines_count=500, max_labels_count=500, max_boxes_count=500, max_bars_back=2000)
 
 // =============================================================================
 // SETTINGS
@@ -44,9 +45,12 @@ string t10Tf = input.timeframe("1M",  "TF 10", inline = "t10", group = G1, toolt
 int    swingStrength = input.int(1, "Swing strength", minval = 1, maxval = 5, tooltip = "Candles on each side of the swing. 1 = classic 3-candle swing, 2 = 5-candle swing, etc.", group = G2)
 string sweepBy       = input.string("Wick", "Swept by", options = ["Wick", "Close"], tooltip = "Wick: any trade through the level. Close: a chart bar must close through it.", group = G2)
 
+string histMode   = input.string("Full history", "Back data", options = ["Full history", "Recent + dynamic"], tooltip = "Full history: past zones (unswept and swept) up to the History count, swept zones kept faintly visible until the bar that swept them. With Dynamic reveal on, those past zones only appear while price is within the ATR distance. Recent + dynamic: the history count is ignored when Dynamic reveal is off, only the newest few are shown.", group = G3)
+int    histCount  = input.int(50, "History per TF / side", minval = 1, maxval = 100, inline = "hist", group = G3)
+int    histSweptTr = input.int(97, "Swept box transparency %", minval = 0, maxval = 100, inline = "hist", tooltip = "Full history only: transparency of a zone after it has been swept. 100 = invisible.", group = G3)
 int    keepActive = input.int(3, "Always show: newest unswept per TF / side", minval = 1, maxval = 100, tooltip = "The newest unswept levels that are always visible.", group = G3)
 int    keepSwept  = input.int(2, "Swept kept per TF / side", minval = 0, maxval = 100, tooltip = "How many swept (mitigated) levels to keep, newest first. 0 hides swept liquidity. Swept boxes are invisible by default (Mitigated box transparency = 100); lines / labels fade.", group = G3)
-bool   dynReveal  = input.bool(true, "Dynamic reveal", inline = "dyn", tooltip = "Older unswept levels stay hidden until price comes close to them, then they appear (box, line and label). They hide again when price moves away. 'Close' = within the ATR distance set here.", group = G3)
+bool   dynReveal  = input.bool(true, "Dynamic reveal (ATR)", inline = "dyn", tooltip = "Zones beyond the newest few (above) stay hidden until price comes within the ATR distance set here, then they appear, swept ones included (back data). They hide again when price moves away. Works with both Back data modes. Off = always show the full list.", group = G3)
 float  revealAtr  = input.float(3.0, "within ATR x", minval = 0.1, maxval = 50.0, step = 0.5, inline = "dyn", group = G3)
 int    atrLen     = input.int(14, "ATR length", minval = 1, maxval = 200, group = G3)
 bool   mergeSame  = input.bool(true, "Merge same-level labels", group = G3)
@@ -63,7 +67,7 @@ const string G5 = "Wick boxes"
 bool   showBox    = input.bool(true, "Wick box", inline = "bx1", tooltip = "Rectangle from the swing extreme to the body edge of the HTF candle that made it (the wick only). It extends live to the right until the level is swept.", group = G5)
 bool   showBoxBrd = input.bool(true, "Border", inline = "bx1", group = G5)
 bool   boxSwept   = input.bool(true, "Keep mitigated boxes", tooltip = "Mitigated = the level has been swept. Off removes the box completely; on keeps it with the transparency below.", group = G5)
-int    boxSweptTr = input.int(100, "Mitigated box transparency %", minval = 0, maxval = 100, tooltip = "Box fill and border once the level is mitigated. 100 = fully transparent (invisible).", group = G5)
+int    boxSweptTr = input.int(97, "Mitigated box transparency %", minval = 0, maxval = 100, tooltip = "Box fill and border once the level is mitigated. 100 = fully transparent (invisible).", group = G5)
 int    lineSweptTr = input.int(60, "Mitigated line / label transparency %", minval = 0, maxval = 100, tooltip = "Line and label once the level is mitigated. 100 = invisible.", group = G5)
 color  bslBoxCol  = input.color(#ffeb3b, "BSL / SSL box colors", inline = "bx2", group = G5)
 color  sslBoxCol  = input.color(color.rgb(33, 150, 243), "", inline = "bx2", group = G5)
@@ -71,6 +75,11 @@ int    boxFillOp  = input.int(9, "BSL fill opacity %", minval = 0, maxval = 100,
 int    sslFillOp  = input.int(4, "SSL fill opacity %", minval = 0, maxval = 100, inline = "bx3", group = G5)
 int    boxBrdOp   = input.int(0, "BSL border opacity %", minval = 0, maxval = 100, inline = "bx3", group = G5)
 int    sslBrdOp   = input.int(0, "SSL border opacity %", minval = 0, maxval = 100, group = G5)
+bool   markTiny   = input.bool(true, "Mark small wicks", inline = "bx4", tooltip = "Small wicks (and levels with no wick at all) still get a visible zone: the box is stretched to the minimum height below.", group = G5)
+float  minZoneAtr = input.float(0.1, "Min zone height (ATR x)", minval = 0.0, maxval = 5.0, step = 0.05, inline = "bx4", group = G5)
+bool   groupTaps  = input.bool(true, "Group taps into one zone", inline = "tp1", tooltip = "A newer swing that sits inside an older unswept zone is counted as a tap of that zone instead of getting its own box.", group = G5)
+bool   showTaps   = input.bool(false, "Show tap count", inline = "tp1", tooltip = "Small count inside the zone, e.g. 3x = the wick area was tapped 3 times without a body closing into it.", group = G5)
+float  capAtr     = input.float(0.0, "Max zone height (ATR x, 0 = off)", minval = 0.0, maxval = 50.0, step = 0.5, group = G5)
 bool   showLine   = input.bool(false, "Show liquidity lines", group = G5)
 
 // =============================================================================
@@ -86,6 +95,8 @@ type Lane
     float  cl
     int    cht
     int    clt
+    int    chb
+    int    clb
     float  co
     float  cc
     array<float> os
@@ -94,6 +105,8 @@ type Lane
     array<float> ls
     array<int>   hts
     array<int>   lts
+    array<int>   hbs
+    array<int>   lbs
 
 type Liq
     int   lane
@@ -102,6 +115,8 @@ type Liq
     int   t
     int   sweptT
     float edge
+    int   taps
+    bool  inTap
 
 var array<Lane> lanes = array.new<Lane>()
 var array<Liq>  liqs  = array.new<Liq>()
@@ -142,7 +157,7 @@ txtSz(string choice) =>
         "Large" => size.large
         => size.tiny
 
-addLiq(int laneNo, bool isHi, float lvl, int t, float edge) =>
+addLiq(int laneNo, bool isHi, float lvl, int t, float edge, int xBar) =>
     bool dup = false
     int n = liqs.size()
     if n > 0
@@ -150,8 +165,37 @@ addLiq(int laneNo, bool isHi, float lvl, int t, float edge) =>
             Liq q = liqs.get(i)
             if q.lane == laneNo and q.hi == isHi and q.t == t
                 dup := true
-    if not dup
-        Liq nq = Liq.new(laneNo, isHi, lvl, t, na, edge)
+    // a swing inside an older unswept zone of the same side is just another tap of that zone
+    bool inside = false
+    if groupTaps and not dup and openLiqs.size() > 0
+        for i = 0 to openLiqs.size() - 1
+            Liq z = openLiqs.get(i)
+            if z.lane == laneNo and z.hi == isHi and na(z.sweptT) and z.t < t
+                if isHi ? (lvl <= z.level and lvl >= z.edge) : (lvl >= z.level and lvl <= z.edge)
+                    inside := true
+    if not dup and not inside
+        // replay the bars since the swing candle: bodies shrink the zone, wicks that poke in are taps
+        float e = edge
+        int tp = 0
+        bool inT = false
+        int nb = math.min(bar_index - xBar, 1900)
+        if nb >= 1
+            for k = nb to 1
+                float bo = isHi ? math.max(open[k], close[k]) : math.min(open[k], close[k])
+                if k == nb
+                    e := isHi ? math.max(e, bo) : math.min(e, bo)
+                else
+                    bool wi = isHi ? (high[k] > e and bo <= e) : (low[k] < e and bo >= e)
+                    if wi
+                        if not inT
+                            tp += 1
+                        inT := true
+                    else
+                        inT := false
+                        if isHi ? bo > e : bo < e
+                            e := bo
+        e := isHi ? math.min(e, lvl) : math.max(e, lvl)
+        Liq nq = Liq.new(laneNo, isHi, lvl, t, na, e, tp, inT)
         liqs.push(nq)
         openLiqs.push(nq)
         while liqs.size() > 1500
@@ -177,9 +221,9 @@ scanPivots(Lane ln, int s) =>
     float oc = ln.os.get(s)
     float cc = ln.cls.get(s)
     if isHi
-        addLiq(ln.no, true, hc, ln.hts.get(s), math.max(oc, cc))
+        addLiq(ln.no, true, hc, ln.hts.get(s), math.max(oc, cc), ln.hbs.get(s))
     if isLo
-        addLiq(ln.no, false, lc, ln.lts.get(s), math.min(oc, cc))
+        addLiq(ln.no, false, lc, ln.lts.get(s), math.min(oc, cc), ln.lbs.get(s))
     0
 
 // Builds the HTF candle from chart bars. A realtime bar runs once per tick, so a candle is only
@@ -194,9 +238,13 @@ ingest(Lane ln, bool isNew, int s) =>
                 ln.ls.push(ln.cl)
                 ln.hts.push(ln.cht)
                 ln.lts.push(ln.clt)
+                ln.hbs.push(ln.chb)
+                ln.lbs.push(ln.clb)
                 ln.os.push(ln.co)
                 ln.cls.push(ln.cc)
                 while ln.hs.size() > win
+                    ln.hbs.shift()
+                    ln.lbs.shift()
                     ln.os.shift()
                     ln.cls.shift()
                     ln.hs.shift()
@@ -210,6 +258,8 @@ ingest(Lane ln, bool isNew, int s) =>
             ln.cl := low
             ln.cht := time
             ln.clt := time
+            ln.chb := bar_index
+            ln.clb := bar_index
             ln.co := open
             ln.cc := close
         else if not na(ln.openT)
@@ -217,9 +267,11 @@ ingest(Lane ln, bool isNew, int s) =>
             if high > ln.ch
                 ln.ch := high
                 ln.cht := time
+                ln.chb := bar_index
             if low < ln.cl
                 ln.cl := low
                 ln.clt := time
+                ln.clb := bar_index
     0
 
 // =============================================================================
@@ -241,6 +293,8 @@ if lanes.size() == 0
         ln.ls := array.new_float()
         ln.hts := array.new_int()
         ln.lts := array.new_int()
+        ln.hbs := array.new_int()
+        ln.lbs := array.new_int()
         lanes.push(ln)
 
 bool ok1  = t1On  and tfValid(t1Tf)
@@ -288,6 +342,18 @@ while oi >= 0
             bslSweptNow := true
         else
             sslSweptNow := true
+    else if barstate.isconfirmed and time > q.t
+        // closed bar: bodies shrink the wick-only zone, wicks that poke into it are taps
+        float bodyEx = q.hi ? math.max(open, close) : math.min(open, close)
+        bool wickIn = q.hi ? (high > q.edge and bodyEx <= q.edge) : (low < q.edge and bodyEx >= q.edge)
+        if wickIn
+            if not q.inTap
+                q.taps += 1
+            q.inTap := true
+        else
+            q.inTap := false
+            if q.hi ? bodyEx > q.edge : bodyEx < q.edge
+                q.edge := bodyEx
     oi -= 1
 
 // =============================================================================
@@ -303,6 +369,10 @@ render() =>
     while drawnBoxes.size() > 0
         box.delete(drawnBoxes.pop())
 
+    bool fullHist = histMode == "Full history"
+    int actLim = fullHist ? histCount : keepActive
+    int swLim  = fullHist ? histCount : keepSwept
+    int swTr   = fullHist ? histSweptTr : boxSweptTr
     int chartMs = int(timeframe.in_seconds() * 1000)
     int nL = lanes.size()
     array<int> actCnt = array.new_int(nL * 2, 0)
@@ -326,8 +396,14 @@ render() =>
                     if q.lane == li
                         int slot = li * 2 + (q.hi ? 0 : 1)
                         bool swept = not na(q.sweptT)
-                        bool near = not swept and dynReveal and not na(atrV) and math.abs(q.level - close) <= atrV * revealAtr
-                        bool allowed = (swept ? (swCnt.get(slot) < keepSwept) : (actCnt.get(slot) < keepActive or near)) and drawnLines.size() < 490 and drawnBoxes.size() < 490 and drawnLabels.size() < 490
+                        // distance from price to the zone (0 when price is inside it)
+                        float zLo = math.min(q.level, q.edge)
+                        float zHi = math.max(q.level, q.edge)
+                        float zDist = close < zLo ? zLo - close : close > zHi ? close - zHi : 0.0
+                        bool near = dynReveal and not na(atrV) and zDist <= atrV * revealAtr
+                        int cntNow = swept ? swCnt.get(slot) : actCnt.get(slot)
+                        bool inLimit = dynReveal ? (cntNow < (swept ? keepSwept : keepActive) or (near and cntNow < histCount)) : cntNow < (swept ? swLim : actLim)
+                        bool allowed = inLimit and drawnLines.size() < 490 and drawnBoxes.size() < 490 and drawnLabels.size() < 490
                         if allowed
                             if swept
                                 swCnt.set(slot, swCnt.get(slot) + 1)
@@ -343,11 +419,17 @@ render() =>
                             if showLine
                                 drawnLines.push(line.new(q.t, q.level, endT, q.level, xloc = xloc.bar_time, color = c, style = sty, width = w))
                             // wick box: extreme -> body edge, live to the right until swept
-                            if showBox and (not swept or boxSwept) and not na(q.edge) and q.edge != q.level
+                            float wickH = math.abs(q.level - q.edge)
+                            float minH = markTiny ? math.max(syminfo.mintick, nz(atrV) * minZoneAtr) : 0.0
+                            float zoneH = math.max(wickH, minH)
+                            if capAtr > 0 and not na(atrV)
+                                zoneH := math.min(zoneH, math.max(syminfo.mintick, atrV * capAtr))
+                            string tapTxt = showTaps and not swept and q.taps > 0 ? str.tostring(q.taps) + "x" : ""
+                            if showBox and (not swept or boxSwept or fullHist) and not na(q.edge) and zoneH > 0
                                 color bc = q.hi ? bslBoxCol : sslBoxCol
-                                color bgc = color.new(bc, swept ? boxSweptTr : 100 - (q.hi ? boxFillOp : sslFillOp))
-                                color brd = showBoxBrd ? color.new(bc, swept ? boxSweptTr : 100 - (q.hi ? boxBrdOp : sslBrdOp)) : color.new(bc, 100)
-                                drawnBoxes.push(box.new(q.t, math.max(q.level, q.edge), endT, math.min(q.level, q.edge), xloc = xloc.bar_time, bgcolor = bgc, border_color = brd, border_width = 1))
+                                color bgc = color.new(bc, swept ? swTr : 100 - (q.hi ? boxFillOp : sslFillOp))
+                                color brd = showBoxBrd ? color.new(bc, swept ? swTr : 100 - (q.hi ? boxBrdOp : sslBrdOp)) : color.new(bc, 100)
+                                drawnBoxes.push(box.new(q.t, q.hi ? q.level : q.level + zoneH, endT, q.hi ? q.level - zoneH : q.level, xloc = xloc.bar_time, bgcolor = bgc, border_color = brd, border_width = 1, text = tapTxt, text_color = tc, text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_center))
 
                             if labelMode != "Off"
                                 int swKey = swept ? q.sweptT : 0
